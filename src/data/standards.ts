@@ -6,8 +6,9 @@ export type ProcessName = "offer.nlpi" | "invoice" | "commission" | "contract" |
 
 // Legacy processes have a real XSD in EcoHub-AG/Standards (schemas/legacy/5.4.1) — no
 // JSON Schema exists for these, so their form is generated from the XSD instead
-// (src/lib/schema/xsdParser.ts). offer.nlpi/generic/ids have no XML schema at all and
-// use a free-text "data" textarea + file upload instead (see SendEvent.tsx).
+// (src/lib/schema/xsdParser.ts). offer.nlpi/ids have no XML schema at all and use a
+// free-text "data" textarea + file upload instead; generic uses a form generated from
+// the GenericExchange JSON Schema (see SendEvent.tsx).
 export type LegacyXsdDef = {
   tag: string;              // Standards repo git tag, e.g. "invoice-v5.4.1"
   xsdFile: string;          // root schema file under schemas/legacy/5.4.1/

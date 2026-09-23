@@ -71,11 +71,13 @@ function ChoiceNode({ pathKey, schema, value, path, readOnly, onChange }: {
 }) {
   const selected: string = value?.["@selected"] ?? schema.options[0]?.label ?? "";
   const active = schema.options.find((o) => o.label === selected);
+  // Reserved "_choice" keys have no name of their own — label by the alternatives instead.
+  const title = pathKey.startsWith("_choice") ? schema.options.map((o) => humanize(o.label)).join(" / ") : humanize(pathKey);
   return (
     <div className="subgrp">
       <div className="grp-head">
         <Folder className="grp-icon" size={13} />
-        <span className="grp-key">{humanize(pathKey)}</span>
+        <span className="grp-key">{title}</span>
         <div className="selectw" style={{ marginLeft: "auto" }}>
           <select value={selected} disabled={readOnly} onChange={(e) => onChange(`${path}.@selected`, e.target.value)}>
             {schema.options.map((o) => <option key={o.label} value={o.label}>{humanize(o.label)}</option>)}
@@ -182,7 +184,11 @@ function ObjectNode({ schema, value, base, readOnly, onChange }: {
       {keys.map((k) => {
         const fieldSchema = schema.properties[k];
         const path = base ? `${base}.${k}` : k;
-        if (fieldSchema.kind === "object" || fieldSchema.kind === "array" || fieldSchema.kind === "choice" || fieldSchema.kind === "unsupported") {
+        if (fieldSchema.kind === "choice") {
+          // ChoiceNode renders its own group header (with the branch selector).
+          return <FieldNode key={k} pathKey={k} schema={fieldSchema} value={value?.[k]} path={path} readOnly={readOnly} onChange={onChange} />;
+        }
+        if (fieldSchema.kind === "object" || fieldSchema.kind === "array" || fieldSchema.kind === "unsupported") {
           return (
             <div className="subgrp" key={k}>
               <div className="grp-head"><Folder className="grp-icon" size={13} /><span className="grp-key">{humanize(k)}</span></div>

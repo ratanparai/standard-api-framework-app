@@ -6,7 +6,9 @@
 // processGroupId/processId/processName/processVersion/processStatus/
 // subProcessName/subProcessStatus) — confirmed directly against each schema
 // file at async-rest-1.2.1 — so one skeleton builder covers all of them; only
-// `type` and the process-name source differ per kind.
+// `type` and the process-name source differ per kind. The one exception is
+// SAFGenericEventType, which additionally requires `businessDomain` — every
+// other schema is additionalProperties:false, so it's only emitted when set.
 import type { EventKind, EventTypeDef } from "../../data/eventTypes";
 import { API_SPECS_BASE } from "./loader";
 
@@ -19,11 +21,13 @@ export type EnvelopeContext = {
   userAgent: { name: string; version: string };
   eventReceiver: { category: string; id: string };
   eventSender: { category: string; id: string };
+  processId?: string; // pass when the payload must reference it (GenericExchange processIdentificationNo)
   processName: string;
   processVersion: string;
   processStatus: string;
   subProcessName: string;
   subProcessStatus: string;
+  businessDomain?: string; // generic only
 };
 
 export function envelopeSchemaUrl(kind: EventKind, def: EventTypeDef): string {
@@ -45,12 +49,13 @@ export function buildEnvelopeSkeleton(ctx: EnvelopeContext) {
     eventReceiver: ctx.eventReceiver,
     eventSender: ctx.eventSender,
     data: ctx.data,
-    processId: globalThis.crypto.randomUUID(),
+    processId: ctx.processId ?? globalThis.crypto.randomUUID(),
     processGroupId: globalThis.crypto.randomUUID(),
     processName: ctx.processName,
     processVersion: ctx.processVersion,
     processStatus: ctx.processStatus,
     subProcessName: ctx.subProcessName,
     subProcessStatus: ctx.subProcessStatus,
+    ...(ctx.businessDomain !== undefined ? { businessDomain: ctx.businessDomain } : {}),
   };
 }

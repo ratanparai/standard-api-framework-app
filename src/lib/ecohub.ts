@@ -228,12 +228,16 @@ export async function fetchMemberKeys(opts: { environment: string; pfxBase64: st
   return { result, data, url, method: "GET" };
 }
 
-// Pick the activated encryption key that supports the given process.
-export function pickEncryptionKey(keys: PublicKeyInfo[], processName: string): PublicKeyInfo | undefined {
-  return keys.find(
-    (k) => k.keyType === "encryption" && k.ecoHubStatus === "Activated" &&
-      (!k.supportedProcesses || k.supportedProcesses.length === 0 || k.supportedProcesses.some((p) => p.processName === processName))
-  );
+// Pick the activated encryption key for a process: a key explicitly supporting
+// one of the candidate process names (tried in order) wins over a key with no
+// process restriction, which is the last resort.
+export function pickEncryptionKey(keys: PublicKeyInfo[], processName: string | string[]): PublicKeyInfo | undefined {
+  const active = keys.filter((k) => k.keyType === "encryption" && k.ecoHubStatus === "Activated");
+  for (const name of Array.isArray(processName) ? processName : [processName]) {
+    const k = active.find((k) => k.supportedProcesses?.some((p) => p.processName === name));
+    if (k) return k;
+  }
+  return active.find((k) => !k.supportedProcesses || k.supportedProcesses.length === 0);
 }
 
 export type KeyKind = "encryption" | "signature";

@@ -25,17 +25,25 @@ export const EVENT_TYPES: Record<EventKind, EventTypeDef> = {
 
 export const ALL_EVENT_KINDS = Object.keys(EVENT_TYPES) as EventKind[];
 
-// Free-text (datalist-suggested, not enforced) process labels for the Generic
-// Exchange kind — the full GenericProcessNameType.json enum at async-rest-1.2.1.
-// Note it's "offer", not "offer.nlpi", for this kind.
-export const GENERIC_PROCESS_SUGGESTIONS = [
+// GenericProcessNameType.json — the envelope processName enum for the Generic
+// Exchange kind (also GenericExchange.json's payload processName, which must
+// match it). Note it's "offer", not "offer.nlpi", and there is no "other".
+export const GENERIC_PROCESS_NAMES = [
   "offer", "invoice", "commission", "contract", "mandate", "claimsExperience",
-  "claims", "customerInformation", "brokerInformation",
-];
+  "claims", "information", "customer", "broker",
+] as const;
+export type GenericProcessName = (typeof GENERIC_PROCESS_NAMES)[number];
 
-// GenericSubProcessNameType.json — workflow-stage values for the Generic
-// Exchange kind's subProcessName (distinct from its processName).
-export const GENERIC_SUBPROCESS_STAGES = ["Initiate", "Provide", "Review", "Decide", "Execute", "Close"];
+// SAFGenericEventType.json pins subProcessName to this single (lowercase)
+// GenericSubProcessNameType value.
+export const GENERIC_SUBPROCESS_NAME = "provide";
+
+// BusinessDomainType.json — required on the Generic Exchange envelope only.
+export const BUSINESS_DOMAINS = ["insurance", "occupationalPension"] as const;
+export type BusinessDomain = (typeof BUSINESS_DOMAINS)[number];
+
+// GenericExchange.json's processVersion const; also sent as the envelope processVersion.
+export const GENERIC_PROCESS_VERSION = "1.0.0";
 
 // The process-name string used to look up an activated encryption key
 // (PublicKeyInfo.supportedProcesses) for event kinds that have no ProcessName
@@ -44,6 +52,7 @@ export const GENERIC_SUBPROCESS_STAGES = ["Initiate", "Provide", "Review", "Deci
 // supportedProcesses and should be replaced once the real value is known.
 export const KEY_PROCESS_NAME_OVERRIDES: Partial<Record<EventKind, string>> = {
   ids: "ids",
+  generic: "generic", // tried first; SendEvent then falls back to the chosen GenericProcessName
 };
 
 // Envelope processName/subProcessName for the kinds with no ProcessName selector

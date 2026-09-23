@@ -12,6 +12,9 @@ export function getAjv(): Ajv2019 {
   if (ajv) return ajv;
   ajv = new Ajv2019({
     strict: false,
+    // Upstream patterns use escapes that are invalid under the "u" flag (e.g.
+    // Generics RegFINMANoType's `CHE\-FINMA…`), so compile them without it.
+    unicodeRegExp: false,
     loadSchema: async (uri: string) => (await fetchDoc(uri)).json,
   });
   addFormats(ajv);
