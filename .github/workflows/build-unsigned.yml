@@ -30,11 +30,15 @@ jobs:
         run: npm ci
 
       - name: Build unsigned NSIS installer
-        shell: bash
+        # Default pwsh shell on purpose: under `shell: bash` Git Bash's MSYS
+        # perl wins on PATH and the vendored OpenSSL Configure fails (missing
+        # Locale::Maketext::Simple); pwsh resolves the runner's Strawberry Perl.
         env:
           # librdkafka 2.3.0's vendored CMakeLists.txt — see ci.yml.
           CMAKE_POLICY_VERSION_MINIMUM: "3.5"
-        run: npx tauri build --bundles nsis --config '{"bundle":{"createUpdaterArtifacts":false,"windows":{"signCommand":null}}}'
+        run: |
+          '{"bundle":{"createUpdaterArtifacts":false,"windows":{"signCommand":null}}}' | Set-Content -Encoding utf8NoBOM "$env:RUNNER_TEMP\unsigned.conf.json"
+          npx tauri build --bundles nsis --config "$env:RUNNER_TEMP\unsigned.conf.json"
 
       - uses: actions/upload-artifact@v4
         with:
