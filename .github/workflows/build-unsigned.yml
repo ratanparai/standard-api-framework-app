@@ -1,0 +1,43 @@
+name: Build (unsigned)
+
+# Builds an UNSIGNED Windows NSIS installer and uploads it as a workflow
+# artifact — for testing a branch (e.g. from a fork) without the release
+# secrets. Nothing is published: no GitHub Release, no updater manifest.
+# Code signing (AZURE_CREDENTIALS / scripts/sign.cmd) and updater artifacts
+# (TAURI_SIGNING_PRIVATE_KEY) are switched off for this build only via
+# --config, which JSON-merge-patches tauri.conf.json (null removes a key).
+# See release.yml for the real signed pipeline.
+
+on:
+  push:
+    branches-ignore: [master]
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build unsigned NSIS installer
+        shell: bash
+        env:
+          # librdkafka 2.3.0's vendored CMakeLists.txt — see ci.yml.
+          CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+        run: npx tauri build --bundles nsis --config '{"bundle":{"createUpdaterArtifacts":false,"windows":{"signCommand":null}}}'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error
