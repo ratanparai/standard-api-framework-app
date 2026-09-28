@@ -13,18 +13,30 @@ name: Build (unsigned)
 #     developer" prompt rather than reporting it as damaged.
 #
 # Triggers:
+#   - push to feature/ratan/kroxy-ack -> builds the pushed commit, tags it
+#     build-<version>-<branch>-run<N>
 #   - push a tag named build-*  -> builds that commit, release uses the tag
-#   - Actions tab "Run workflow" -> builds the chosen branch, tags it
-#     build-<version>-run<N>
+#   - Actions tab "Run workflow" -> builds the chosen branch, tagged like a
+#     branch push
+# The tags this workflow creates don't re-trigger it: pushes made with
+# GITHUB_TOKEN never start new workflow runs.
 
 on:
   push:
+    branches:
+      - feature/ratan/kroxy-ack
     tags:
       - "build-*"
   workflow_dispatch:
 
 permissions:
   contents: write
+
+# A newer push to the same branch cancels a build still running for an
+# older commit, so only the latest code gets released.
+concurrency:
+  group: build-unsigned-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -112,7 +124,8 @@ jobs:
           if [ "$GITHUB_REF_TYPE" = tag ]; then
             tag="$GITHUB_REF_NAME"
           else
-            tag="build-${version}-run${GITHUB_RUN_NUMBER}"
+            branch=$(echo "$GITHUB_REF_NAME" | sed 's#.*/##')
+            tag="build-${version}-${branch}-run${GITHUB_RUN_NUMBER}"
           fi
           cat > notes.md <<EOF
           Unsigned test build of **${version}** from \`${GITHUB_REF_NAME}\` (${GITHUB_SHA::7}).
