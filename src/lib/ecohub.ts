@@ -19,8 +19,8 @@ export const ENV_URLS: Record<string, string> = {
 export const CSM_HOSTS: Record<string, string> = {
   Development: "saf.dev.essential-sandbox.com",
   Test: "kroxy.test.essential-sandbox.com",
-  Staging: "saf.essentials-staging.com",
-  IAT: "saf.test-myecohub.ch",
+  Staging: "kroxy.essentials-staging.com",
+  IAT: "kroxy.test-myecohub.ch",
   Production: "saf.myecohub.ch",
 };
 
