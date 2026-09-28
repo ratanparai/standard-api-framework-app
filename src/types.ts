@@ -57,7 +57,7 @@ export type BusMessage = {
   // searched for when coordinating with a counterparty outside EcoHub.
   processId?: string;
   time: string;
-  envelope: Envelope;
+  envelope?: Envelope;
   // Full CloudEvents envelope that was produced, so the Outbox can show the
   // event payload (like the Inbox's raw-event pane). Optional for back-compat
   // with records saved before this field existed.

@@ -33,6 +33,14 @@ export const GENERIC_PROCESS_SUGGESTIONS = [
   "claims", "information", "customer", "broker",
 ];
 
+export const GENERIC_PROCESS_VERSION = "1.0.0";
+
+export const BUSINESS_DOMAINS = {
+  insurance: "Insurance",
+  occupationalPension: "Occupational pension",
+} as const;
+export type BusinessDomain = keyof typeof BUSINESS_DOMAINS;
+
 // GenericSubProcessNameType.json — workflow-stage values (verbatim lowercase
 // enum), used for the subProcessName of the generic and ids kinds. Note the
 // generic event additionally pins this with `allOf … enum: ["provide"]`, so

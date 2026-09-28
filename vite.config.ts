@@ -1,4 +1,4 @@
-import { defineConfig } from "vite";
+import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 
@@ -12,5 +12,10 @@ export default defineConfig({
     // src-tauri/target crashes the dev server with EBUSY when cargo writes
     // locked build-script executables there during `tauri dev`.
     watch: { ignored: ["**/src-tauri/**"] },
+  },
+  test: {
+    environment: "jsdom",
+    setupFiles: ["./src/test/setup.ts"],
+    clearMocks: true,
   },
 });

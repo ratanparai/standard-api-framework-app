@@ -1,13 +1,9 @@
-// Builds the outgoing SAF envelope object. All 6 branches of the
-// eh.saf.in.v1-value anyOf (SAFEventType, SAFGenericEventType, SAFIDSEventType,
-// SAFInquiryEventType, SAFErrorEventType, OfferNLPIErrorEventType) share the
-// same top-level property set (id/source/specversion/type/datacontenttype/
-// dataschema/subject/time/licenceKey/userAgent/eventReceiver/eventSender/data/
-// processGroupId/processId/processName/processVersion/processStatus/
-// subProcessName/subProcessStatus) — confirmed directly against each schema
-// file at async-rest-1.2.1 — so one skeleton builder covers all of them; only
-// `type` and the process-name source differ per kind.
-import type { EventKind, EventTypeDef } from "../../data/eventTypes";
+// Builds the outgoing SAF envelope object. The data, IDS, inquiry, and error
+// branches share their documented base properties; Generic additionally
+// carries its root-level businessDomain. A draft's processId is supplied by
+// the composer so it remains stable across encryptions and can match the
+// Generic payload's processIdentificationNo.
+import type { BusinessDomain, EventKind, EventTypeDef } from "../../data/eventTypes";
 import { API_SPECS_BASE } from "./loader";
 
 export type EnvelopeContext = {
@@ -20,7 +16,9 @@ export type EnvelopeContext = {
   eventReceiver: { category: string; id: string };
   eventSender: { category: string; id: string };
   processName: string;
+  processId: string;
   processVersion: string;
+  businessDomain?: BusinessDomain;
   processStatus: string;
   subProcessName: string;
   subProcessStatus: string;
@@ -45,10 +43,11 @@ export function buildEnvelopeSkeleton(ctx: EnvelopeContext) {
     eventReceiver: ctx.eventReceiver,
     eventSender: ctx.eventSender,
     data: ctx.data,
-    processId: globalThis.crypto.randomUUID(),
+    processId: ctx.processId,
     processGroupId: globalThis.crypto.randomUUID(),
     processName: ctx.processName,
     processVersion: ctx.processVersion,
+    ...(ctx.eventType.kind === "generic" && ctx.businessDomain ? { businessDomain: ctx.businessDomain } : {}),
     processStatus: ctx.processStatus,
     subProcessName: ctx.subProcessName,
     subProcessStatus: ctx.subProcessStatus,

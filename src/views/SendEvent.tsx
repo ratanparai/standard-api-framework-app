@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { Lock, ArrowRight, Send, Copy, Check, FileText, AlertTriangle, RefreshCw, Loader2, Upload } from "lucide-react";
 import { PROCESSES, ALL_PROCESS_NAMES, isProcessName, LEGACY_XSD_NAMESPACE, legacyXsdBase, resolveLegacyXsd, type ProcessName } from "../data/standards";
-import { EVENT_TYPES, ALL_EVENT_KINDS, GENERIC_PROCESS_SUGGESTIONS, GENERIC_SUBPROCESS_STAGES, SUBPROCESS_NAMES, KEY_PROCESS_NAME_OVERRIDES, DEFAULT_PROCESS_NAME_NO_SELECTOR, type EventKind } from "../data/eventTypes";
+import { EVENT_TYPES, ALL_EVENT_KINDS, GENERIC_PROCESS_SUGGESTIONS, GENERIC_SUBPROCESS_STAGES, SUBPROCESS_NAMES, KEY_PROCESS_NAME_OVERRIDES, DEFAULT_PROCESS_NAME_NO_SELECTOR, BUSINESS_DOMAINS, type BusinessDomain, type EventKind } from "../data/eventTypes";
 import { useApp } from "../store";
 import FormTree from "../components/FormTree";
 import DetailModal, { type Detail } from "../components/DetailModal";
@@ -14,6 +14,8 @@ import type { FieldSchema } from "../lib/formSchema";
 import { loadLegacyForm } from "../lib/schema/xsdParser";
 import { buildEnvelopeSkeleton, envelopeSchemaUrl } from "../lib/schema/envelope";
 import { validateAgainstSchema } from "../lib/schema/ajv";
+import { resolveProcessVersion } from "../lib/processVersion";
+import { isGenericPayloadObject, synchronizeGenericProcessIdentificationNo } from "../lib/processIdentification";
 
 const MAX_UPLOAD_BYTES = 8 * 1024 * 1024;
 
@@ -26,8 +28,10 @@ export default function SendEvent() {
   const [recvLoading, setRecvLoading] = useState(false);
   const [recvIdx, setRecvIdx] = useState(0);
   const [eventKind, setEventKind] = useState<EventKind>("data");
+  const [processId, setProcessId] = useState(() => globalThis.crypto.randomUUID());
   const [proc, setProc] = useState<ProcessName>("offer.nlpi");
   const [genericProcessName, setGenericProcessName] = useState(GENERIC_PROCESS_SUGGESTIONS[0]);
+  const [businessDomain, setBusinessDomain] = useState<BusinessDomain>("insurance");
   const [nonDataProc, setNonDataProc] = useState<string>(DEFAULT_PROCESS_NAME_NO_SELECTOR);
   const [subProcess, setSubProcess] = useState(PROCESSES["offer.nlpi"].subProcessName);
 
@@ -45,6 +49,9 @@ export default function SendEvent() {
   // base64 shown in the textarea. Cleared whenever the user hand-edits that text.
   const [uploadedFileBytes, setUploadedFileBytes] = useState<Uint8Array | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const operationGeneration = useRef(0);
+  const processIdRef = useRef(processId);
+  processIdRef.current = processId;
 
   const [event, setEvent] = useState<any | null>(null);
   const [envelopeText, setEnvelopeText] = useState("");
@@ -64,19 +71,36 @@ export default function SendEvent() {
   // used to look up how many versions the receiver has on file for it.
   const currentProcessId: string = eventKind === "data" ? proc : eventKind === "generic" ? genericProcessName : nonDataProc;
 
-  const availableVersions = useMemo(() => {
-    const versions = (receiver?.supportedProcesses ?? [])
-      .filter((p) => p.processName === currentProcessId && p.processVersion)
-      .map((p) => p.processVersion!);
-    const unique = Array.from(new Set(versions));
-    if (unique.length) return unique;
-    const fallback = isProcessName(currentProcessId) ? PROCESSES[currentProcessId].defaultVersion : "1.0.0";
-    return [fallback];
-  }, [receiver, currentProcessId]);
-
   const [versionOverride, setVersionOverride] = useState<string | null>(null);
-  useEffect(() => { setVersionOverride(null); }, [currentProcessId, receiver]);
-  const processVersion = versionOverride ?? availableVersions[0];
+  useEffect(() => { setVersionOverride(null); }, [eventKind, currentProcessId, receiver]);
+  const versionSelection = useMemo(() => resolveProcessVersion(
+    eventKind,
+    currentProcessId,
+    receiver?.supportedProcesses ?? [],
+    isProcessName(currentProcessId) ? PROCESSES[currentProcessId].defaultVersion : "1.0.0",
+    versionOverride,
+  ), [eventKind, currentProcessId, receiver, versionOverride]);
+  const availableVersions = versionSelection.availableVersions;
+  const processVersion = versionSelection.processVersion;
+
+  function invalidateGeneratedEvent() {
+    operationGeneration.current += 1;
+    setEncrypting(false);
+    setEvent(null);
+    setEnvelopeText("");
+    setValidationErrors([]);
+    setStatus("Selection changed — encrypt to rebuild the event.");
+  }
+
+  function startNewProcess() {
+    const nextProcessId = globalThis.crypto.randomUUID();
+    processIdRef.current = nextProcessId;
+    invalidateGeneratedEvent();
+    setProcessId(nextProcessId);
+    if (eventKind === "generic") {
+      setDataText((text) => synchronizeGenericProcessIdentificationNo(text, nextProcessId).text);
+    }
+  }
 
   // Depends on processVersion, not just proc — this is what makes the version
   // dropdown actually change which XSD tag/file gets loaded.
@@ -87,7 +111,7 @@ export default function SendEvent() {
   // every process/type selector below.
   const versionPicker = availableVersions.length > 1 ? (
     <div className="selectw" style={{ width: 110 }}>
-      <select value={processVersion} onChange={(e) => setVersionOverride(e.target.value)}>
+      <select aria-label="Process version" value={processVersion} onChange={(e) => { invalidateGeneratedEvent(); setVersionOverride(e.target.value); }}>
         {availableVersions.map((v) => <option key={v} value={v}>{v}</option>)}
       </select>
     </div>
@@ -131,9 +155,10 @@ export default function SendEvent() {
   // Seed the free-text data pane from whatever sample exists for the selected process/kind.
   useEffect(() => {
     if (legacyDef) return;
-    if (eventKind === "data") setDataText(toJSON(PROCESSES[proc].sample));
-    else setDataText("");
-    setUploadedFileBytes(null);
+    if (eventKind === "data") {
+      setDataText(toJSON(PROCESSES[proc].sample));
+      setUploadedFileBytes(null);
+    }
     setEvent(null);
     setEnvelopeText("");
     setValidationErrors([]);
@@ -141,10 +166,12 @@ export default function SendEvent() {
 
   async function loadReceivers() {
     if (!configured || !pfx) { toast("Connect this profile first"); return; }
+    invalidateGeneratedEvent();
     setRecvLoading(true);
     try {
       const { result, data, url, method, requestBody } = await fetchReceivers({ environment: active.credentials.environment, pfxBase64: pfx, password: active.credentials.password, license: active.credentials.license });
       if (result.ok && data) {
+        invalidateGeneratedEvent();
         setReceivers(data); setRecvIdx(0);
         toast(`${data.length} receiver${data.length === 1 ? "" : "s"} loaded`);
       } else {
@@ -158,6 +185,7 @@ export default function SendEvent() {
   useEffect(() => { if (configured && pfx && receivers.length === 0) loadReceivers(); }, []);
 
   function changeProc(p: ProcessName) {
+    invalidateGeneratedEvent();
     setProc(p);
     setSubProcess(PROCESSES[p].subProcessName);
     setValues(deepClone(PROCESSES[p].sample));
@@ -165,27 +193,46 @@ export default function SendEvent() {
 
   function onField(path: string, val: any) {
     setValues((prev: any) => { const n = deepClone(prev); setPath(n, path, val); return n; });
-    setEvent(null);
+    invalidateGeneratedEvent();
   }
 
   async function onUploadFile(f: File | undefined) {
     if (!f) return;
+    const uploadProcessId = processIdRef.current;
+    const uploadGeneration = operationGeneration.current;
     if (f.size > MAX_UPLOAD_BYTES) {
       toast(`${f.name} is ${(f.size / (1024 * 1024)).toFixed(1)}MB — max upload size is 8MB`);
       return;
     }
     try {
       const [bytes, b64] = await Promise.all([fileToBytes(f), fileToBase64(f)]);
-      setUploadedFileBytes(bytes);
-      setDataText(b64);
-      setEvent(null);
-      toast(`${f.name} → base64, filled into "data"`);
+      if (uploadProcessId !== processIdRef.current || uploadGeneration !== operationGeneration.current) return;
+      let uploadMessage = `${f.name} → base64 preview; uploaded bytes preserved for encryption.`;
+      if (eventKind === "generic") {
+        const genericText = synchronizeGenericProcessIdentificationNo(new TextDecoder().decode(bytes), uploadProcessId);
+        if (genericText.isObject) {
+          setUploadedFileBytes(null);
+          setDataText(genericText.text);
+          uploadMessage = `${f.name} loaded as JSON; Generic processIdentificationNo synchronized.`;
+        } else {
+          setUploadedFileBytes(bytes);
+          setDataText(b64);
+          uploadMessage = `${f.name} → base64 preview; binary/non-object bytes preserved unchanged for encryption.`;
+        }
+      } else {
+        setUploadedFileBytes(bytes);
+        setDataText(b64);
+      }
+      invalidateGeneratedEvent();
+      toast(uploadMessage);
     } catch (e) {
       toast(`Could not read ${f.name}: ${String((e as Error).message)}`);
     }
   }
 
   const cleartext = legacyDef ? rawXml : dataText;
+  const genericPlaintext = uploadedFileBytes ? new TextDecoder().decode(uploadedFileBytes) : dataText;
+  const genericPayloadIsObject = eventKind === "generic" && isGenericPayloadObject(genericPlaintext);
   const eventTypeDef = EVENT_TYPES[eventKind];
 
   const blocker = !configured ? "Connect this profile first (Configuration)."
@@ -195,14 +242,27 @@ export default function SendEvent() {
 
   async function doEncrypt() {
     if (blocker) { setStatus(blocker); return; }
+    const generation = ++operationGeneration.current;
     setEncrypting(true); setStatus("Fetching receiver key & encrypting…");
     try {
+      let cleartextForEncryption: string | Uint8Array = uploadedFileBytes ?? cleartext;
+      if (eventKind === "generic") {
+        const genericText = typeof cleartextForEncryption === "string"
+          ? cleartextForEncryption
+          : new TextDecoder().decode(cleartextForEncryption);
+        const synchronized = synchronizeGenericProcessIdentificationNo(genericText, processIdRef.current);
+        if (synchronized.isObject) {
+          cleartextForEncryption = synchronized.text;
+          setDataText(synchronized.text);
+          setUploadedFileBytes(null);
+        }
+      }
       const idp = receiver.idp[0];
       const km = await fetchMemberKeys({ environment: active.credentials.environment, pfxBase64: pfx!, password: active.credentials.password, idp });
+      if (generation !== operationGeneration.current) return;
       if (!km.result.ok || !km.data) {
         setDetail({ title: "Fetch receiver public key", status: km.result.status, ok: false, body: km.result.body, url: km.url, method: km.method });
         setStatus("✗ Could not fetch receiver key.");
-        setEncrypting(false);
         return;
       }
       const processNameForKey =
@@ -212,17 +272,17 @@ export default function SendEvent() {
       if (!encKey) {
         setDetail({ title: "Fetch receiver public key", status: km.result.status, ok: true, body: km.result.body, url: km.url, method: km.method });
         setStatus(`✗ ${receiver.companyName} has no activated encryption key for ${processNameForKey}.`);
-        setEncrypting(false);
         return;
       }
 
       const data = await crypto.encryptAndSign({
-        cleartext: uploadedFileBytes ?? cleartext,
+        cleartext: cleartextForEncryption,
         recipientEncPublicPem: encKey.key,
         publicKeyVersion: encKey.version,
         signerSigPrivatePem: senderSig!.privatePem,
         signatureKeyVersion: senderSig!.version,
       });
+      if (generation !== operationGeneration.current) return;
 
       const dataschema =
         eventKind === "data"
@@ -246,7 +306,9 @@ export default function SendEvent() {
         eventReceiver: { category: toCategoryEnum(receiver.memberType), id: idp },
         eventSender: { category: active.membershipType, id: active.credentials.idp },
         processName,
+        processId,
         processVersion,
+        ...(eventKind === "generic" ? { businessDomain } : {}),
         processStatus,
         subProcessName,
         subProcessStatus: "Created",
@@ -258,9 +320,10 @@ export default function SendEvent() {
       // Setting the text above triggers that effect, which finalises the status.
       setStatus("Encrypted & signed — validating envelope…");
     } catch (e) {
-      setStatus("✗ " + String((e as Error).message));
+      if (generation === operationGeneration.current) setStatus("✗ " + String((e as Error).message));
+    } finally {
+      if (generation === operationGeneration.current) setEncrypting(false);
     }
-    setEncrypting(false);
   }
 
   function onEnvelopeTextChange(text: string) {
@@ -366,7 +429,7 @@ export default function SendEvent() {
             <span className="fl">Target (receiver)</span>
             <div style={{ display: "flex", gap: 8 }}>
               <div className="selectw" style={{ flex: 1 }}>
-                <select value={recvIdx} disabled={!receivers.length} onChange={(e) => { setRecvIdx(+e.target.value); setEvent(null); }}>
+                <select aria-label="Target receiver" value={recvIdx} disabled={!receivers.length} onChange={(e) => { invalidateGeneratedEvent(); setRecvIdx(+e.target.value); }}>
                   {receivers.length === 0 ? <option>{configured ? "No receivers loaded" : "Connect first"}</option>
                     : receivers.map((r, i) => <option key={i} value={i}>{r.companyName} ({r.memberType})</option>)}
                 </select>
@@ -380,9 +443,9 @@ export default function SendEvent() {
           <div className="sel">
             <span className="fl">Event type</span>
             <div className="selectw">
-              <select value={eventKind} onChange={(e) => {
+              <select aria-label="Event type" value={eventKind} onChange={(e) => {
                 const k = e.target.value as EventKind;
-                setEventKind(k); setEvent(null);
+                invalidateGeneratedEvent(); setEventKind(k);
                 setSubProcess(k === "data" ? PROCESSES[proc].subProcessName : k === "generic" ? "provide" : k === "ids" ? "initiate" : "request");
               }}>
                 {ALL_EVENT_KINDS.map((k) => <option key={k} value={k}>{EVENT_TYPES[k].label}</option>)}
@@ -390,12 +453,19 @@ export default function SendEvent() {
             </div>
             <span className="std-tag">{eventTypeDef.ceType}</span>
           </div>
+          <div className="sel">
+            <span className="fl">Process ID</span>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span className="std-tag" aria-label="Process ID" style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis" }}>{processId}</span>
+              <button className="btn-ghost" disabled={sending !== null} onClick={startNewProcess}>New process</button>
+            </div>
+          </div>
           {eventKind === "data" && (
             <div className="sel">
               <span className="fl">Process (standard)</span>
               <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                 <div className="selectw" style={{ flex: 1 }}>
-                  <select value={proc} onChange={(e) => changeProc(e.target.value as ProcessName)}>
+                  <select aria-label="Standard process" value={proc} onChange={(e) => changeProc(e.target.value as ProcessName)}>
                     {procOptions.map((p) => <option key={p} value={p}>{PROCESSES[p].label} ({p})</option>)}
                   </select>
                 </div>
@@ -408,11 +478,21 @@ export default function SendEvent() {
               <span className="fl">Process</span>
               <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                 <div className="selectw" style={{ flex: 1 }}>
-                  <select value={genericProcessName} onChange={(e) => { setGenericProcessName(e.target.value); setEvent(null); }}>
+                  <select aria-label="Generic process" value={genericProcessName} onChange={(e) => { invalidateGeneratedEvent(); setGenericProcessName(e.target.value); }}>
                     {GENERIC_PROCESS_SUGGESTIONS.map((s) => <option key={s} value={s}>{s}</option>)}
                   </select>
                 </div>
-                {versionPicker}
+                <span className="std-tag">processVersion {processVersion}</span>
+              </div>
+            </div>
+          )}
+          {eventKind === "generic" && (
+            <div className="sel">
+              <span className="fl">Business domain</span>
+              <div className="selectw">
+                <select aria-label="Business domain" value={businessDomain} onChange={(e) => { invalidateGeneratedEvent(); setBusinessDomain(e.target.value as BusinessDomain); }}>
+                  {Object.entries(BUSINESS_DOMAINS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                </select>
               </div>
             </div>
           )}
@@ -421,7 +501,7 @@ export default function SendEvent() {
               <span className="fl">Process</span>
               <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                 <div className="selectw" style={{ flex: 1 }}>
-                  <select value={nonDataProc} onChange={(e) => { setNonDataProc(e.target.value); setEvent(null); }}>
+                  <select aria-label="Process" value={nonDataProc} onChange={(e) => { invalidateGeneratedEvent(); setNonDataProc(e.target.value); }}>
                     {(eventKind === "error" ? Array.from(new Set([...ALL_PROCESS_NAMES, ...GENERIC_PROCESS_SUGGESTIONS])) : ALL_PROCESS_NAMES)
                       .map((p) => <option key={p} value={p}>{PROCESSES[p as ProcessName]?.label ? `${PROCESSES[p as ProcessName].label} (${p})` : p}</option>)}
                   </select>
@@ -433,7 +513,7 @@ export default function SendEvent() {
           <div className="sel">
             <span className="fl">Sub-process</span>
             <div className="selectw">
-              <select value={subProcess} onChange={(e) => { setSubProcess(e.target.value); setEvent(null); }}>
+              <select aria-label="Sub-process" value={subProcess} onChange={(e) => { invalidateGeneratedEvent(); setSubProcess(e.target.value); }}>
                 {(eventKind === "generic" || eventKind === "ids" ? GENERIC_SUBPROCESS_STAGES : SUBPROCESS_NAMES).map((s) => <option key={s} value={s}>{s}</option>)}
               </select>
             </div>
@@ -487,7 +567,7 @@ export default function SendEvent() {
                     <div className="raw-bar">
                       <button className="btn-copy" onClick={() => { copyText(rawXml); toast("Copied"); }}><Copy size={12} /> Copy</button>
                     </div>
-                    <textarea className="code-edit" spellCheck={false} value={rawXml} onChange={(e) => { setRawXml(e.target.value); setEvent(null); }} />
+                    <textarea className="code-edit" spellCheck={false} value={rawXml} onChange={(e) => { setRawXml(e.target.value); invalidateGeneratedEvent(); }} />
                   </div>
                 )
               ) : (
@@ -496,10 +576,21 @@ export default function SendEvent() {
                     <button className="btn-copy" onClick={() => { copyText(dataText); toast("Copied"); }}><Copy size={12} /> Copy</button>
                   </div>
                   <textarea
-                    className="code-edit" spellCheck={false} value={dataText}
-                    placeholder="Free-form data — type it in, or upload a file (it will be base64-encoded into this box)."
-                    onChange={(e) => { setDataText(e.target.value); setUploadedFileBytes(null); setEvent(null); }}
+                    aria-label="Event data" className="code-edit" spellCheck={false} value={dataText}
+                    placeholder="Free-form data — type it in, or upload a file (binary uploads appear as base64 here)."
+                    onChange={(e) => {
+                      const text = e.target.value;
+                      setDataText(text);
+                      setUploadedFileBytes(null);
+                      invalidateGeneratedEvent();
+                    }}
+                    onBlur={(e) => {
+                      if (eventKind === "generic") setDataText(synchronizeGenericProcessIdentificationNo(e.target.value, processIdRef.current).text);
+                    }}
                   />
+                  {eventKind === "generic" && !genericPayloadIsObject && (
+                    <div className="unsupported-note">This Generic payload is not a JSON object. It will be encrypted unchanged; only the envelope process ID is generated.</div>
+                  )}
                 </div>
               )}
             </div>
@@ -526,7 +617,7 @@ export default function SendEvent() {
                   <div className="s">Encrypt to assemble the signed {eventTypeDef.label} envelope that will be produced to the in-topic.</div>
                 </div>
               ) : (
-                <textarea className="code-edit" spellCheck={false} value={envelopeText} onChange={(e) => onEnvelopeTextChange(e.target.value)} />
+                <textarea aria-label="SAF event envelope" className="code-edit" spellCheck={false} value={envelopeText} onChange={(e) => onEnvelopeTextChange(e.target.value)} />
               )}
               {validationErrors.length > 0 && (
                 <div className="unsupported-note" style={{ marginTop: 8 }}>

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import {
   Search, Inbox as InboxIcon, KeyRound, ArrowRight, Check, Copy,
@@ -10,13 +10,15 @@ import JsonView from "../components/JsonView";
 import { toJSON, copyText } from "../lib/format";
 import { decrypt, verify } from "../lib/crypto";
 import type { Envelope } from "../lib/crypto";
-import { inboxFor, addMessage, type InboxMessage } from "../lib/inboxStore";
-import { kafkaStartConsumer, kafkaStopConsumer, fetchMemberKeys, isTauri } from "../lib/ecohub";
+import { inboxFor, addMessage, markAcknowledged, type InboxMessage } from "../lib/inboxStore";
+import { kafkaStartConsumer, kafkaStopConsumer, fetchMemberKeys, isTauri, produceViaKafka, schemaRegistryGetIds } from "../lib/ecohub";
+import { acknowledgementIneligibility, buildAcknowledgement } from "../lib/acknowledgement";
+import { publish } from "../lib/bus";
 
 // Single source of truth: real Kafka-consumed events, persisted in the vault
 // (src/lib/inboxStore.ts). No local/mock feed — this is the live inbox.
 export default function Inbox() {
-  const { active, toast, configured, sessionInboxIds, markReceivedThisSession } = useApp();
+  const { active, toast, configured, sessionInboxIds, markReceivedThisSession, bumpBus } = useApp();
   const pfx = active.techUser?.techUserCert;
   const idp = active.credentials.idp || active.id;
 
@@ -29,8 +31,12 @@ export default function Inbox() {
   const [decoded, setDecoded] = useState<any | null>(null);
   const [verified, setVerified] = useState<boolean | null>(null);
   const [viewMode, setViewMode] = useState<"form" | "raw">("form");
-  const [acked, setAcked] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [ackPendingId, setAckPendingId] = useState<string | null>(null);
+  const [ackErr, setAckErr] = useState<string | null>(null);
+  const ackInFlight = useRef(false);
+  const selectedIdRef = useRef<string | null>(null);
+  const profileRef = useRef({ id: active.id, idp: active.credentials.idp });
 
   // Reload history whenever the active profile's idp changes.
   useEffect(() => { setItems(inboxFor(idp)); }, [idp]);
@@ -40,8 +46,10 @@ export default function Inbox() {
     return s ? items.filter((m) => (m.fromIdp + m.subject + m.topic).toLowerCase().includes(s)) : items;
   }, [items, q]);
   const sel = items.find((m) => m.id === selId) ?? items[0] ?? null;
+  selectedIdRef.current = sel?.id ?? null;
+  profileRef.current = { id: active.id, idp: active.credentials.idp };
 
-  useEffect(() => { setDecoded(null); setVerified(null); setAcked(false); setErr(null); }, [selId, sel?.id]);
+  useEffect(() => { setDecoded(null); setVerified(null); setErr(null); setAckErr(null); }, [selId, sel?.id]);
 
   // Start/stop the Kafka consumer when profile connectivity changes.
   useEffect(() => {
@@ -139,6 +147,96 @@ export default function Inbox() {
     setDecrypting(false);
   }
 
+  async function doAcknowledge() {
+    if (!sel || sel.acknowledgedAt || ackInFlight.current) return;
+    const message = sel;
+    const profile = {
+      id: active.id,
+      name: active.name,
+      idp: active.credentials.idp,
+      membershipType: active.membershipType,
+      licenceKey: active.credentials.license,
+      environment: active.credentials.environment,
+      password: active.credentials.password,
+      pfxBase64: pfx ?? "",
+    };
+    const profileIdentity = { id: profile.id, idp: profile.idp };
+    const issue = acknowledgementIneligibility(message.rawEvent, profile);
+    if (issue) { setAckErr(issue); return; }
+    if (!isTauri) { setAckErr("Open the desktop app to acknowledge this event."); return; }
+    if (!configured || !profile.pfxBase64) { setAckErr("Connect this profile in the desktop app before acknowledging."); return; }
+
+    let acknowledgement;
+    try {
+      acknowledgement = buildAcknowledgement(message.rawEvent, profile);
+    } catch (e) {
+      setAckErr(String((e as Error).message));
+      return;
+    }
+
+    ackInFlight.current = true;
+    setAckPendingId(message.id);
+    setAckErr(null);
+    try {
+      let valueSchemaId: number | undefined;
+      try {
+        const ids = await schemaRegistryGetIds({
+          environment: profile.environment,
+          pfxBase64: profile.pfxBase64,
+          password: profile.password,
+          topic: "eh.saf.in.v1",
+        });
+        valueSchemaId = ids.valueSchemaId;
+      } catch {
+        // Use the same existing Kafka producer fallback schema ID as normal sends.
+      }
+      const result = await produceViaKafka({
+        environment: profile.environment,
+        pfxBase64: profile.pfxBase64,
+        password: profile.password,
+        eventJson: JSON.stringify(acknowledgement),
+        processId: acknowledgement.processId,
+        valueSchemaId,
+      });
+      if (!result.ok) throw new Error(result.detail || "Kafka did not accept the acknowledgement.");
+
+      const acknowledgedAt = new Date().toISOString();
+      markAcknowledged(message.id, acknowledgedAt, acknowledgement.id);
+      publish({
+        id: `ack-${acknowledgement.id}`,
+        fromProfileId: profile.id,
+        fromName: profile.name,
+        toName: message.fromIdp,
+        toIdp: acknowledgement.eventReceiver.id,
+        topic: "eh.saf.in.v1",
+        standardNs: "",
+        subject: `${acknowledgement.processName} acknowledgement`,
+        processId: acknowledgement.processId,
+        time: new Date(acknowledgedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+        rawEvent: acknowledgement,
+        recipientEncPublicPem: "",
+        signerSigPublicPem: "",
+        signerName: profile.name,
+        status: "sent",
+      });
+      bumpBus();
+      if (profileRef.current.id === profileIdentity.id && profileRef.current.idp === profileIdentity.idp) {
+        setItems(inboxFor(profile.idp));
+      }
+      toast(`Acknowledgement sent to ${message.fromIdp}`);
+    } catch (e) {
+      const messageText = String((e as Error).message);
+      if (profileRef.current.id === profileIdentity.id && profileRef.current.idp === profileIdentity.idp && selectedIdRef.current === message.id) {
+        setAckErr(`Acknowledgement failed: ${messageText}. You can retry.`);
+      } else {
+        toast(`Acknowledgement failed: ${messageText}`);
+      }
+    } finally {
+      ackInFlight.current = false;
+      setAckPendingId(null);
+    }
+  }
+
   const consumerIcon = consumerState === "ready" ? <Wifi size={12} style={{ color: "var(--ok)" }} />
     : consumerState === "error" ? <WifiOff size={12} style={{ color: "var(--err)" }} />
     : consumerState === "starting" ? <Wifi size={12} style={{ opacity: 0.4 }} />
@@ -159,6 +257,9 @@ export default function Inbox() {
     sel?.envelope.payload && sel?.envelope.encryptionKey && sel?.envelope.payloadSignature
   );
   const rawEventText = sel ? toJSON(sel.rawEvent) : "";
+  const ackProfile = { idp: active.credentials.idp, membershipType: active.membershipType, licenceKey: active.credentials.license };
+  const ackIssue = sel ? acknowledgementIneligibility(sel.rawEvent, ackProfile) : "Select an event to acknowledge.";
+  const alreadyAcknowledged = Boolean(sel?.acknowledgedAt);
 
   return (
     <div className="view">
@@ -242,6 +343,19 @@ export default function Inbox() {
                       </span>
                     </div>
                     <JsonView data={sel.rawEvent} className="code-block-bounded" />
+                    <div className="pane-foot">
+                      <span className="st">
+                        {ackErr ? <span style={{ color: "var(--err)" }}>{ackErr}</span>
+                          : alreadyAcknowledged ? <span className="chip chip-ok"><CheckCheck size={10} /> Acknowledged</span>
+                          : !configured || !pfx ? <span className="st">Connect this profile in the desktop app to acknowledge.</span>
+                          : !active.credentials.idp ? <span className="st">Set an IDP for the active profile before acknowledging.</span>
+                          : ackIssue ? <span className="st">{ackIssue}</span>
+                          : null}
+                      </span>
+                      <button className="btn-primary" disabled={alreadyAcknowledged || !!ackIssue || !isTauri || !configured || !pfx || !active.credentials.idp || ackPendingId !== null} onClick={doAcknowledge}>
+                        <CheckCheck size={14} /> {ackPendingId === sel.id ? "Sending acknowledgement…" : alreadyAcknowledged ? "Acknowledged" : "Acknowledge"}
+                      </button>
+                    </div>
                   </div>
                 </div>
 
@@ -285,9 +399,6 @@ export default function Inbox() {
                               ? <span className="chip chip-warn"><ShieldAlert size={10} /> Signature NOT verified</span>
                               : null}
                           </span>
-                          <button className="btn-primary" disabled={acked} onClick={() => { setAcked(true); toast("Acknowledged"); }}>
-                            <CheckCheck size={14} /> {acked ? "Acknowledged" : "Acknowledge"}
-                          </button>
                         </div>
                       )}
                     </div>

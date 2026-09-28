@@ -18,7 +18,7 @@ export const ENV_URLS: Record<string, string> = {
 // CSM Kafka bootstrap hosts (port 9092) per environment — from the C# tool seed.
 export const CSM_HOSTS: Record<string, string> = {
   Development: "saf.dev.essential-sandbox.com",
-  Test: "saf.test.essential-sandbox.com",
+  Test: "kroxy.test.essential-sandbox.com",
   Staging: "saf.essentials-staging.com",
   IAT: "saf.test-myecohub.ch",
   Production: "saf.myecohub.ch",
