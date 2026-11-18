@@ -33,6 +33,10 @@ function build(kind: "generic" | "data", businessDomain?: "insurance" | "occupat
 }
 
 describe("buildEnvelopeSkeleton", () => {
+  it("uses the EHP fork's own CloudEvents source", () => {
+    expect(build("generic", "insurance").source).toBe("http://www.myecohub.ch/ehp/ratan/saf-testing-tool");
+  });
+
   it.each(["insurance", "occupationalPension"] as const)("places Generic businessDomain=%s at the root", (businessDomain) => {
     const envelope = build("generic", businessDomain);
 

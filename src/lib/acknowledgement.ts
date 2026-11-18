@@ -1,4 +1,5 @@
 import type { MembershipType } from "../types";
+import { EVENT_SOURCE } from "./eventSource";
 
 const ACKNOWLEDGEABLE_TYPES = new Set([
   "ch.ecohub.saf.data",
@@ -88,7 +89,7 @@ export function buildAcknowledgement(
   const original = event as Record<string, any>;
   const acknowledgement: AcknowledgementEvent = {
     id: options.eventId ?? globalThis.crypto.randomUUID(),
-    source: "http://www.myecohub.ch/saf-testing-tool",
+    source: EVENT_SOURCE,
     specversion: "1.0",
     type: original.type,
     time: options.time ?? new Date().toISOString(),

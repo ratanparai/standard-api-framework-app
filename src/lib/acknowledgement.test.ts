@@ -35,6 +35,7 @@ describe("buildAcknowledgement", () => {
     });
 
     expect(ack.id).not.toBe(incoming.id);
+    expect(ack.source).toBe("http://www.myecohub.ch/ehp/ratan/saf-testing-tool");
     expect(ack.eventSender).toEqual({ category: "insurer", id: profile.idp });
     expect(ack.eventReceiver).toEqual({ category: "broker", id: "IDP3003669" });
     expect(ack.processId).toBe(incoming.processId);

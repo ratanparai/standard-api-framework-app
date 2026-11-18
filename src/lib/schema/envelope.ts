@@ -5,6 +5,7 @@
 // Generic payload's processIdentificationNo.
 import type { BusinessDomain, EventKind, EventTypeDef } from "../../data/eventTypes";
 import { API_SPECS_BASE } from "./loader";
+import { EVENT_SOURCE } from "../eventSource";
 
 export type EnvelopeContext = {
   eventType: EventTypeDef;
@@ -31,7 +32,7 @@ export function envelopeSchemaUrl(kind: EventKind, def: EventTypeDef): string {
 export function buildEnvelopeSkeleton(ctx: EnvelopeContext) {
   return {
     id: globalThis.crypto.randomUUID(),
-    source: "http://www.myecohub.ch/saf-testing-tool",
+    source: EVENT_SOURCE,
     specversion: "1.0",
     type: ctx.eventType.ceType,
     datacontenttype: "application/json",
